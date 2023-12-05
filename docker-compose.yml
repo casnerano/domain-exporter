@@ -1,0 +1,7 @@
+version: "3.8"
+
+services:
+  domain-exporter:
+    build: ./
+    ports:
+      - "8099:80"
