@@ -2,7 +2,7 @@ FROM golang:1.19-alpine3.17 AS builder
 
 WORKDIR /build
 
-COPY go.mod domain-exporter.go ./
+COPY go.mod go.sum domain-exporter.go ./
 RUN go mod download && go mod verify
 
 RUN CGO_ENABLED=0 GOOS=linux go build -o ./domain-exporter ./domain-exporter.go

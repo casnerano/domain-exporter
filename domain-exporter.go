@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"html/template"
@@ -10,16 +11,16 @@ import (
 	"strings"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
+
+var addr = flag.String("a", ":80", "server address")
 
 type domain struct {
 	name     string
 	paidTill time.Time
-	freeDate time.Time
 }
-
-var addr = flag.String("a", "localhost:8080", "Server address")
 
 func main() {
 	flag.Parse()
@@ -34,12 +35,31 @@ func main() {
 
 	mux.Handle("/metrics", promhttp.Handler())
 
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/probe", func(w http.ResponseWriter, r *http.Request) {
 		target := strings.TrimSpace(r.URL.Query().Get("target"))
 		if target == "" {
 			w.WriteHeader(http.StatusBadRequest)
-			// ......
 		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		d := whois(ctx, target)
+
+		dPaidTill := prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Name: "paid_till_seconds",
+				Help: "Domain paid till seconds",
+			},
+			[]string{"domain"},
+		)
+
+		registry := prometheus.NewRegistry()
+		registry.MustRegister(dPaidTill)
+
+		dPaidTill.With(prometheus.Labels{"domain": d.name}).Set(d.paidTill.Sub(time.Now()).Seconds())
+
+		promhttp.HandlerFor(registry, promhttp.HandlerOpts{}).ServeHTTP(w, r)
 	})
 
 	if err := http.ListenAndServe(*addr, mux); err != nil {
@@ -47,10 +67,10 @@ func main() {
 	}
 }
 
-func whois(host string) *domain {
-	out, err := exec.Command("bash", "-c", fmt.Sprintf("whois %s", host)).Output()
+func whois(ctx context.Context, host string) *domain {
+	out, err := exec.CommandContext(ctx, "bash", "-c", fmt.Sprintf("whois %s", host)).Output()
 	if err != nil {
-		log.Fatal(err)
+		log.Println(err)
 	}
 
 	d := domain{name: host}
@@ -66,16 +86,10 @@ func whois(host string) *domain {
 
 		switch key {
 		case "paid-till:":
-			if pt, ptErr := time.Parse(time.RFC3339, value); err == nil {
+			if pt, ptErr := time.Parse(time.RFC3339, value); ptErr == nil {
 				d.paidTill = pt
 			} else {
 				log.Printf("Failed parse paid-till date for %s: %s\n", host, ptErr.Error())
-			}
-		case "free-date:":
-			if fd, fdErr := time.Parse(time.RFC3339, value); err == nil {
-				d.paidTill = fd
-			} else {
-				log.Printf("Failed parse paid-till date for %s: %s\n", host, fdErr.Error())
 			}
 		}
 	}
@@ -92,7 +106,7 @@ func getIndexTemplate() *template.Template {
 				</head>
 				<body>
 					<h1>Domain Exporter</h1>
-					<p><a href="/metrics"></a></p>
+					<p><a href="/metrics">metrics</a></p>
 					<p><a href="/probe?target=ya.ru">probe ya.ru</a></p>
 				</body>
 			</html>`,
