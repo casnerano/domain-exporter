@@ -15,12 +15,86 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-var addr = flag.String("a", ":80", "server address")
+const (
+	namespace = "domain"
+)
 
-type domain struct {
-	name     string
-	paidTill time.Time
+type (
+	domain = string
+	result struct {
+		paidTill time.Time
+		freeDate time.Time
+	}
+)
+
+var (
+	descriptions = map[string]*prometheus.Desc{
+		"success": prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, "", "success"),
+			"Domain check was successful",
+			[]string{"domain"},
+			nil,
+		),
+		"paid_till": prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, "", "paid_till_timestamp_seconds"),
+			"Domain paid till",
+			[]string{"domain"},
+			nil,
+		),
+		"free_date": prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, "", "free_date_timestamp_seconds"),
+			"Domain free date",
+			[]string{"domain"},
+			nil,
+		),
+	}
+)
+
+type collector struct {
+	domain domain
 }
+
+func newCollector(domain domain) *collector {
+	return &collector{
+		domain: domain,
+	}
+}
+
+func (c *collector) Describe(ch chan<- *prometheus.Desc) {
+	for _, desc := range descriptions {
+		ch <- desc
+	}
+}
+
+func (c *collector) Collect(ch chan<- prometheus.Metric) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var success, paidTill, freeDate float64
+
+	res, err := whois(ctx, c.domain)
+	if err == nil {
+		success = 1
+		paidTill = float64(res.paidTill.Unix())
+		freeDate = float64(res.freeDate.Unix())
+	}
+
+	fmt.Println(err)
+
+	log.Printf(
+		"Whois %s:  (success: %v; paid_till_timestamp_seconds: %v; free_date_timestamp_seconds: %v)",
+		c.domain,
+		success,
+		paidTill,
+		freeDate,
+	)
+
+	ch <- prometheus.MustNewConstMetric(descriptions["success"], prometheus.GaugeValue, success, c.domain)
+	ch <- prometheus.MustNewConstMetric(descriptions["paid_till"], prometheus.GaugeValue, paidTill, c.domain)
+	ch <- prometheus.MustNewConstMetric(descriptions["free_date"], prometheus.GaugeValue, freeDate, c.domain)
+}
+
+var addr = flag.String("a", ":80", "server address")
 
 func main() {
 	flag.Parse()
@@ -41,25 +115,11 @@ func main() {
 			w.WriteHeader(http.StatusBadRequest)
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		d := whois(ctx, target)
-
-		dPaidTill := prometheus.NewGaugeVec(
-			prometheus.GaugeOpts{
-				Name: "paid_till_seconds",
-				Help: "Domain paid till seconds",
-			},
-			[]string{"domain"},
-		)
-
 		registry := prometheus.NewRegistry()
-		registry.MustRegister(dPaidTill)
+		registry.MustRegister(newCollector(target))
 
-		dPaidTill.With(prometheus.Labels{"domain": d.name}).Set(d.paidTill.Sub(time.Now()).Seconds())
-
-		promhttp.HandlerFor(registry, promhttp.HandlerOpts{}).ServeHTTP(w, r)
+		h := promhttp.HandlerFor(registry, promhttp.HandlerOpts{})
+		h.ServeHTTP(w, r)
 	})
 
 	if err := http.ListenAndServe(*addr, mux); err != nil {
@@ -67,13 +127,13 @@ func main() {
 	}
 }
 
-func whois(ctx context.Context, host string) *domain {
-	out, err := exec.CommandContext(ctx, "bash", "-c", fmt.Sprintf("whois %s", host)).Output()
+func whois(ctx context.Context, d domain) (*result, error) {
+	out, err := exec.CommandContext(ctx, "bash", "-c", fmt.Sprintf("whois %s", d)).Output()
 	if err != nil {
-		log.Println(err)
+		return nil, err
 	}
 
-	d := domain{name: host}
+	res := result{}
 
 	for _, line := range strings.Split(string(out), "\n") {
 		fields := strings.Fields(line)
@@ -86,15 +146,19 @@ func whois(ctx context.Context, host string) *domain {
 
 		switch key {
 		case "paid-till:":
-			if pt, ptErr := time.Parse(time.RFC3339, value); ptErr == nil {
-				d.paidTill = pt
-			} else {
-				log.Printf("Failed parse paid-till date for %s: %s\n", host, ptErr.Error())
+			res.paidTill, err = time.Parse(time.RFC3339, value)
+			if err != nil {
+				return nil, fmt.Errorf("failed parse paid-till date for %s: %w", d, err)
+			}
+		case "free-date:":
+			res.freeDate, err = time.Parse(time.DateOnly, value)
+			if err != nil {
+				return nil, fmt.Errorf("failed parse paid-till date for %s: %w", d, err)
 			}
 		}
 	}
 
-	return &d
+	return &res, nil
 }
 
 func getIndexTemplate() *template.Template {
@@ -106,8 +170,8 @@ func getIndexTemplate() *template.Template {
 				</head>
 				<body>
 					<h1>Domain Exporter</h1>
-					<p><a href="/metrics">metrics</a></p>
-					<p><a href="/probe?target=ya.ru">probe ya.ru</a></p>
+					<p><a href="/metrics">Metrics</a></p>
+					<p><a href="/probe?target=ya.ru">Probe ya.ru</a></p>
 				</body>
 			</html>`,
 		),
