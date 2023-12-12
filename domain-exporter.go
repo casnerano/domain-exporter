@@ -80,7 +80,7 @@ func (c *collector) Collect(ch chan<- prometheus.Metric) {
 	}
 
 	log.Printf(
-		"Whois %s:  (success: %v; paid_till_seconds: %v; free_date_seconds: %v)",
+		"Collected for %s:  (success: %v; paid_till_seconds: %v; free_date_seconds: %v)\n",
 		c.domain,
 		success,
 		paidTill,
@@ -93,6 +93,7 @@ func (c *collector) Collect(ch chan<- prometheus.Metric) {
 }
 
 var addr = flag.String("a", ":80", "server address")
+var debug = flag.Bool("d", false, "debug mode")
 
 func main() {
 	flag.Parse()
@@ -108,7 +109,10 @@ func main() {
 	mux.Handle("/metrics", promhttp.Handler())
 
 	mux.HandleFunc("/probe", func(w http.ResponseWriter, r *http.Request) {
-		target := strings.TrimSpace(r.URL.Query().Get("target"))
+		target := strings.TrimLeft(
+			strings.TrimSpace(r.URL.Query().Get("target")), "www.",
+		)
+
 		if target == "" {
 			w.WriteHeader(http.StatusBadRequest)
 		}
@@ -133,27 +137,29 @@ func whois(ctx context.Context, d domain) (*result, error) {
 
 	res := result{}
 
+	if *debug {
+		log.Printf("whois %s\n%s\n", d, out)
+	}
+
 	for _, line := range strings.Split(string(out), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) != 2 {
 			continue
 		}
 
-		key := strings.TrimSpace(fields[0])
+		key := strings.TrimRight(strings.TrimSpace(fields[0]), ":")
 		value := strings.TrimSpace(fields[1])
 
 		switch key {
-		case "paid-till:":
-			res.paidTill, err = time.Parse(time.RFC3339, value)
-			if err != nil {
-				return nil, fmt.Errorf("failed parse paid-till date for %s: %w", d, err)
-			}
-		case "free-date:":
-			res.freeDate, err = time.Parse(time.DateOnly, value)
-			if err != nil {
-				return nil, fmt.Errorf("failed parse paid-till date for %s: %w", d, err)
-			}
+		case "paid-till":
+			res.paidTill, _ = time.Parse(time.RFC3339, value)
+		case "free-date":
+			res.freeDate, _ = time.Parse(time.DateOnly, value)
 		}
+	}
+
+	if res.paidTill.IsZero() || res.freeDate.IsZero() {
+		return nil, fmt.Errorf("failed values parse")
 	}
 
 	return &res, nil
