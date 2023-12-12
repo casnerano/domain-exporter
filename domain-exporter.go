@@ -36,13 +36,13 @@ var (
 			nil,
 		),
 		"paid_till": prometheus.NewDesc(
-			prometheus.BuildFQName(namespace, "", "paid_till_timestamp_seconds"),
+			prometheus.BuildFQName(namespace, "", "paid_till_seconds"),
 			"Domain paid till",
 			[]string{"domain"},
 			nil,
 		),
 		"free_date": prometheus.NewDesc(
-			prometheus.BuildFQName(namespace, "", "free_date_timestamp_seconds"),
+			prometheus.BuildFQName(namespace, "", "free_date_seconds"),
 			"Domain free date",
 			[]string{"domain"},
 			nil,
@@ -75,14 +75,12 @@ func (c *collector) Collect(ch chan<- prometheus.Metric) {
 	res, err := whois(ctx, c.domain)
 	if err == nil {
 		success = 1
-		paidTill = float64(res.paidTill.Unix())
-		freeDate = float64(res.freeDate.Unix())
+		paidTill = res.paidTill.Sub(time.Now()).Seconds()
+		freeDate = res.freeDate.Sub(time.Now()).Seconds()
 	}
 
-	fmt.Println(err)
-
 	log.Printf(
-		"Whois %s:  (success: %v; paid_till_timestamp_seconds: %v; free_date_timestamp_seconds: %v)",
+		"Whois %s:  (success: %v; paid_till_seconds: %v; free_date_seconds: %v)",
 		c.domain,
 		success,
 		paidTill,
