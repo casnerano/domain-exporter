@@ -109,7 +109,7 @@ func main() {
 	mux.Handle("/metrics", promhttp.Handler())
 
 	mux.HandleFunc("/probe", func(w http.ResponseWriter, r *http.Request) {
-		target := strings.TrimLeft(
+		target := strings.TrimPrefix(
 			strings.TrimSpace(r.URL.Query().Get("target")), "www.",
 		)
 
